@@ -1,0 +1,12 @@
+{
+    "name": "ljs",
+    "target_wav": "wavs/ljs.wav",
+    "lang": "ko",
+    "reference_style": "auto",
+    "seed": 42,
+    "lr": 0.0002,
+    "num_steps": 100000,
+    "total_step": 5,
+    "speed": 1.05,
+    "save_every": 500
+}
