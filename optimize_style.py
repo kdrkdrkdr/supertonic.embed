@@ -3,8 +3,9 @@ Extract voice style JSON from a WAV file for SupertonicTTS.
 
 Core approach:
   - Convert ONNX TTS models to PyTorch (enables gradient backpropagation)
-  - Optimize style vectors via HuBERT multi-layer feature matching
-  - Multiple text rotation prevents overfitting to specific phonemes
+  - Optimize style vectors via WavLM Layer 3 feature matching
+  - Layer selection based on Chen et al. (2025) probing analysis
+  - Early stopping at same-speaker baseline threshold (0.24)
 
 Usage:
     python optimize_style.py ljs         # uses configs/ljs.json
@@ -43,6 +44,7 @@ httpx.Client = _NoVerifyClient
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+
 # ===== ONNX to PyTorch conversion =====
 
 def _patch_onnx2torch():
@@ -80,64 +82,48 @@ def load_pt_model(name, onnx_dir="onnx"):
         p.requires_grad_(False)
     return m.to(DEVICE)
 
-# ===== HuBERT perceptual loss =====
+# ===== WavLM perceptual loss =====
 
-def load_hubert():
-    """Load pretrained HuBERT-Large for multi-layer feature extraction."""
-    from transformers import HubertModel
-    model = HubertModel.from_pretrained('facebook/hubert-large-ls960-ft').to(DEVICE).eval()
+def load_wavlm():
+    """Load WavLM-Large. Layer 3 best encodes speaker identity (Chen et al. 2025)."""
+    from transformers import WavLMModel
+    model = WavLMModel.from_pretrained('microsoft/wavlm-large').to(DEVICE).eval()
     for p in model.parameters():
         p.requires_grad_(False)
     return model
 
-def hubert_feature_loss(hubert, gen_wav, target_features, layers=[1,3,5,7,9,11]):
+def wavlm_feature_loss(wavlm, gen_wav, target_features, layer=3):
     """
-    Compare HuBERT features across multiple layers.
-
-    For each layer, compares:
-      - Time-averaged mean (captures overall spectral characteristics)
-      - Time-averaged std (captures energy dynamics)
-      - Gram matrix (captures feature correlations = "style")
-
-    Time-averaging removes content dependency.
+    Compare WavLM Layer 3 features between generated and target audio.
+    Time-averaged mean and std capture speaker identity independent of content.
     """
     if gen_wav.ndim == 1:
         gen_wav = gen_wav.unsqueeze(0)
     gen_wav_16k = torchaudio.functional.resample(gen_wav, 44100, 16000)
-    gen_out = hubert(gen_wav_16k, output_hidden_states=True)
+    gen_out = wavlm(gen_wav_16k, output_hidden_states=True)
 
-    loss = 0.0
-    for l in layers:
-        gen_feat = gen_out.hidden_states[l]
-        tgt_mean, tgt_std, tgt_gram = target_features[l]
+    gen_feat = gen_out.hidden_states[layer]
+    tgt_mean, tgt_std = target_features
 
-        gen_mean = gen_feat.mean(dim=1)
-        gen_std = gen_feat.std(dim=1)
-        loss += F.mse_loss(gen_mean, tgt_mean)
-        loss += F.mse_loss(gen_std, tgt_std)
+    gen_mean = gen_feat.mean(dim=1)
+    gen_std = gen_feat.std(dim=1)
 
-        gen_gram = torch.bmm(gen_feat.transpose(1, 2), gen_feat) / gen_feat.shape[1]
-        loss += F.mse_loss(gen_gram, tgt_gram) * 0.1
+    loss = F.mse_loss(gen_mean, tgt_mean) + F.mse_loss(gen_std, tgt_std)
+    return loss
 
-    return loss / len(layers)
-
-def extract_hubert_targets(hubert, target_wav, layers=[1,3,5,7,9,11]):
-    """Pre-compute HuBERT feature statistics from target WAV."""
+def extract_wavlm_targets(wavlm, target_wav, layer=3):
+    """Pre-compute WavLM Layer 3 feature statistics from target WAV."""
     if target_wav.ndim == 1:
         target_wav = target_wav.unsqueeze(0)
     wav_16k = torchaudio.functional.resample(target_wav, 44100, 16000)
 
     with torch.no_grad():
-        out = hubert(wav_16k, output_hidden_states=True)
+        out = wavlm(wav_16k, output_hidden_states=True)
 
-    features = {}
-    for l in layers:
-        feat = out.hidden_states[l]
-        mean = feat.mean(dim=1)
-        std = feat.std(dim=1)
-        gram = torch.bmm(feat.transpose(1, 2), feat) / feat.shape[1]
-        features[l] = (mean, std, gram)
-    return features
+    feat = out.hidden_states[layer]
+    mean = feat.mean(dim=1)
+    std = feat.std(dim=1)
+    return (mean, std)
 
 # ===== TTS forward pass =====
 
@@ -212,9 +198,10 @@ def main():
     num_steps = cfg.get("num_steps", 3000)
     total_step = cfg.get("total_step", 5)
     speed = cfg.get("speed", 1.05)
-    save_every = cfg.get("save_every", 500)
+    save_every = cfg.get("save_every", 100)
+    threshold = cfg.get("early_stop_loss_threshold", 0.24)
 
-    # Texts for multi-text rotation (content-independent, prevents overfitting)
+    # Texts for multi-text rotation
     opt_texts = [
         "The sun sets behind the mountains, painting the sky in shades of pink and orange.",
         "I took a walk in the park this morning, and the sound of birds was so pleasant.",
@@ -228,7 +215,7 @@ def main():
     output_json = f"voice_styles/{name}.json"
     log_dir = f"logs/{name}"
     os.makedirs(log_dir, exist_ok=True)
-    os.makedirs("results", exist_ok=True)
+
 
     # Save config to log dir
     with open(os.path.join(log_dir, "train_config.json"), "w", encoding="utf-8") as f:
@@ -249,19 +236,18 @@ def main():
     print(f"Using device: {DEVICE}")
     print(f"Name: {name}")
 
-    # ===== 1. Load target WAV and extract HuBERT features =====
+    # ===== 1. Load target WAV and extract WavLM features =====
     print(f"\nLoading target WAV: {target_wav_path}")
     target_wav, _ = librosa.load(target_wav_path, sr=44100)
     target_wav_t = torch.tensor(target_wav, dtype=torch.float32).to(DEVICE)
     print(f"  Duration: {len(target_wav)/44100:.2f}s")
 
-    print("\nLoading HuBERT...")
-    hubert = load_hubert()
-    print("  HuBERT loaded.")
+    print("\nLoading WavLM-Large...")
+    wavlm = load_wavlm()
+    print("  WavLM loaded.")
 
-    hubert_layers = [1, 3, 5, 7, 9, 11]
-    print("Extracting target features...")
-    target_hubert_feats = extract_hubert_targets(hubert, target_wav_t, hubert_layers)
+    print("Extracting target features (Layer 3)...")
+    target_feats = extract_wavlm_targets(wavlm, target_wav_t)
     print("  Done.")
 
     # ===== 2. Load TTS models (ONNX -> PyTorch) =====
@@ -300,14 +286,13 @@ def main():
 
     # ===== 5. Initialize style vectors =====
     if latest_ckpt:
-        # Auto-resume from latest checkpoint
         print(f"\nResuming from: {latest_ckpt} (step {start_step})")
         ref_style = load_voice_style(latest_ckpt)
         style_ttl = torch.tensor(ref_style.ttl, dtype=torch.float32).to(DEVICE).clone().requires_grad_(True)
         style_dp = torch.tensor(ref_style.dp, dtype=torch.float32).to(DEVICE).clone()
     elif reference_style == "auto":
-        # Auto-select closest preset style via HuBERT distance
-        print("\nFinding closest style to target WAV...")
+        # Auto-select closest preset via WavLM Layer 3 distance
+        print("\nFinding closest style to target WAV (WavLM Layer 3)...")
         all_style_paths = sorted(glob.glob("voice_styles/[FM]*.json"))
         best_dist = float('inf')
         best_path = None
@@ -321,7 +306,7 @@ def main():
                     dp_model, te_model, ve_model, voc_model,
                     total_step, speed, noisy_latent_fixed, latent_mask,
                 )
-                dist = hubert_feature_loss(hubert, test_wav.squeeze(), target_hubert_feats, hubert_layers).item()
+                dist = wavlm_feature_loss(wavlm, test_wav.squeeze(), target_feats).item()
             print(f"  {os.path.basename(sp)}: {dist:.4f}")
             if dist < best_dist:
                 best_dist = dist
@@ -331,14 +316,12 @@ def main():
         style_ttl = torch.tensor(ref_style.ttl, dtype=torch.float32).to(DEVICE).clone().requires_grad_(True)
         style_dp = torch.tensor(ref_style.dp, dtype=torch.float32).to(DEVICE).clone()
     elif reference_style:
-        # Use specified reference style
         print(f"\nInitializing style from: {reference_style}")
         ref_style = load_voice_style(reference_style)
         style_ttl = torch.tensor(ref_style.ttl, dtype=torch.float32).to(DEVICE).clone().requires_grad_(True)
         style_dp = torch.tensor(ref_style.dp, dtype=torch.float32).to(DEVICE).clone()
     else:
-        # Random initialization (not recommended)
-        print("\nInitializing style randomly")
+        print("\nInitializing style randomly (not recommended)")
         style_ttl = (torch.randn(1, 50, 256) * 0.1).to(DEVICE).requires_grad_(True)
         style_dp = torch.tensor(load_voice_style("voice_styles/M1.json").dp, dtype=torch.float32).to(DEVICE).clone()
 
@@ -355,7 +338,9 @@ def main():
         print(f"\nAlready reached target step ({end_step}). Nothing to do.")
         return
 
-    print(f"\nStarting optimization (step {start_step+1} -> {end_step})...")
+    import time
+    start_time = time.time()
+    print(f"\nStarting optimization (step {start_step+1} -> {end_step}, early stop at {threshold})...")
 
     best_loss = float('inf')
     best_ttl = None
@@ -377,7 +362,7 @@ def main():
         gen_wav = wav_out.squeeze()
 
         # Compute loss
-        loss = hubert_feature_loss(hubert, gen_wav, target_hubert_feats, hubert_layers)
+        loss = wavlm_feature_loss(wavlm, gen_wav, target_feats)
 
         # Backward + update
         loss.backward()
@@ -393,32 +378,26 @@ def main():
         # Log
         if (step + 1) % 10 == 0:
             current_lr = optimizer.param_groups[0]['lr']
-            print(f"  Step {step+1}/{end_step} | Loss: {loss.item():.9f} | LR: {current_lr:.9f} | Best: {best_loss:.9f}")
+            print(f"  Step {step+1}/{end_step} | Loss: {loss.item():.4f} | LR: {current_lr:.4f} | Best: {best_loss:.4f}")
 
         # Save checkpoint
         if (step + 1) % save_every == 0:
-            ckpt_path = f"{log_dir}/{name}_{step+1:08d}.json"
+            ckpt_path = f"{log_dir}/{name}_{step+1:04d}.json"
             save_style(ckpt_path, best_ttl, best_dp, target_wav_path)
             print(f"  >> Checkpoint saved: {ckpt_path}")
 
-    # ===== 7. Save final result =====
-    print(f"\nSaving best style to: {output_json}")
-    save_style(output_json, best_ttl, best_dp, target_wav_path)
-    print(f"  Done! Best loss: {best_loss:.9f}")
+        # Early stopping
+        if best_loss <= threshold:
+            print(f"  Early stop at step {step+1}: best loss {best_loss:.4f} <= {threshold}")
+            break
 
-    # ===== 8. Generate test audio =====
-    print("\nGenerating test audio with optimized style...")
-    with torch.no_grad():
-        wav_test, _ = tts_forward(
-            text_inputs[0][0], text_inputs[0][1],
-            best_ttl.to(DEVICE), best_dp.to(DEVICE),
-            dp_model, te_model, ve_model, voc_model,
-            total_step, speed, noisy_latent_fixed, latent_mask,
-        )
-    wav_np = wav_test.squeeze().cpu().numpy()
-    result_path = f"results/{name}_optimized.wav"
-    sf.write(result_path, wav_np, 44100)
-    print(f"  Saved: {result_path}")
+    # ===== 7. Save final result =====
+    final_path = f"{log_dir}/{name}_final.json"
+    print(f"\nSaving best style to: {final_path}")
+    save_style(final_path, best_ttl, best_dp, target_wav_path)
+    elapsed = time.time() - start_time
+    print(f"  Done! Best loss: {best_loss:.4f} | Time: {elapsed:.1f}s ({elapsed/60:.1f}min)")
+
 
 
 if __name__ == "__main__":

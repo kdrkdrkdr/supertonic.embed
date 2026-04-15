@@ -18,10 +18,10 @@ Put in a 3~10 second voice sample, and get a voice style JSON that makes Superto
       │       └───────────────────────────────────────────┘      │
       │                                                          │
       │                      ┌────────────┐                      │
-      │                      │   HuBERT   │◄─────────────────────┘
-      │                      │  (6 layer  │
-      │                      │  feature   │◄── target WAV
-      │                      │ matching)  │
+      │                      │   WavLM    │◄─────────────────────┘
+      │                      │  Layer 3   │
+      │                      │  (speaker  │◄── target WAV
+      │                      │ identity)  │
       │                      └─────┬──────┘
       │                            │
       │      gradient              │ loss
@@ -29,12 +29,12 @@ Put in a 3~10 second voice sample, and get a voice style JSON that makes Superto
       "update style to be more similar"
 ```
 
-1. Auto-selects the closest preset style (F1~F5, M1~M5) as starting point
-2. Synthesizes WAV via TTS, compares with target WAV using HuBERT features
-3. Updates style vector via gradient descent, repeats thousands of times
+1. Auto-selects the closest preset style (F1~F5, M1~M5) via WavLM Layer 3 distance
+2. Synthesizes WAV via TTS, compares with target WAV using WavLM Layer 3 features
+3. Updates style vector via gradient descent until convergence (early stop at 0.24)
 
 ### Convergence Guide:
-Best loss reaching **2.0~2.4** is considered same-voice level. Lower is better.
+Same-speaker baseline loss is **0.15~0.24**. Optimization stops automatically when this threshold is reached.
 
 ## Quick Start
 
@@ -61,7 +61,7 @@ Create `configs/ljs.json`:
     "num_steps": 3000,
     "total_step": 5,
     "speed": 1.05,
-    "save_every": 500
+    "save_every": 100
 }
 ```
 
@@ -72,14 +72,14 @@ Create `configs/ljs.json`:
 | `reference_style` | `"auto"` (auto-select closest) or `"voice_styles/F1.json"` (manual) |
 | `seed` | Random seed for reproducibility |
 | `lr` | Learning rate. 2e-4 recommended. Too high breaks pronunciation, too low is slow |
-| `num_steps` | Number of optimization steps |
+| `num_steps` | Max optimization steps (early stopping may stop sooner) |
 | `save_every` | Checkpoint save interval |
 
 ### 5. Run optimization
 ```bash
 python optimize_style.py ljs
 ```
-Training auto-resumes from the latest checkpoint if interrupted.
+Training auto-resumes from the latest checkpoint if interrupted. Early stops when loss reaches 0.24 (same-speaker level).
 
 ### 6. Use the extracted style
 See `main.py` for inference example.
@@ -87,7 +87,15 @@ See `main.py` for inference example.
 ## How long does it take?
 1. Model loading & conversion (~30 seconds)
 2. Auto style selection (~1 minute, 10 styles compared)
-3. Optimization (~10-30 minutes for 3000 steps on RTX 3090)
+3. Optimization (~2-5 minutes, avg 494 steps on RTX 3090)
+
+## Performance
+Evaluated on 20 speakers × 5 utterances = 100 samples:
+
+| | SIM ↑ | WER ↓ |
+|---|---|---|
+| Preset styles (no cloning) | — | 1.72% |
+| **Proposed method** | **0.874** | **1.30%** |
 
 ## File Structure
 ```
@@ -114,8 +122,7 @@ voice_styles/             # Voice style JSONs
 logs/                     # Checkpoints
 └── ljs/
     ├── train_config.json
-    ├── ljs_00000500.json
-    ├── ljs_00001000.json
+    ├── ljs_00000100.json
     └── ...
 
 results/                  # Test outputs
@@ -130,7 +137,7 @@ results/                  # Test outputs
 | text_encoder | Text encoding (SupertonicTTS) |
 | vector_estimator | Flow matching denoising (SupertonicTTS) |
 | vocoder | Latent to WAV (SupertonicTTS) |
-| HuBERT-Large | Multi-layer perceptual loss (facebook/hubert-large-ls960-ft) |
+| WavLM-Large | Perceptual loss, Layer 3 (microsoft/wavlm-large) |
 
 ## Technical Details
 
@@ -140,14 +147,8 @@ ONNX models are converted to PyTorch for gradient backpropagation:
 - Forced opset 17 (onnx2torch compatibility)
 - Clip node empty input fix
 
-### HuBERT Multi-Layer Feature Matching
-Compares features from 6 HuBERT layers (1, 3, 5, 7, 9, 11):
-- **Low layers (1~3)**: Timbre, tone
-- **Mid layers (5~7)**: Pronunciation, prosody
-- **High layers (9~11)**: Speaker identity
-- **Gram matrix**: Style correlations (Neural Style Transfer for audio)
-
-Time-axis averaging removes content dependency, only voice characteristics are compared.
+### WavLM Layer 3 Feature Matching
+Based on probing analysis by [Chen et al. (2025)](https://arxiv.org/abs/2501.05310), WavLM Layer 3 best encodes speaker identity (100% accuracy). We compare time-averaged feature statistics (mean, std) between generated and target audio. Time-axis averaging removes content dependency.
 
 ### Style Space
 - `style_ttl` [1, 50, 256] = 12,800 parameters (timbre, optimized)
