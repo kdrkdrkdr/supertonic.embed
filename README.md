@@ -87,15 +87,15 @@ See `main.py` for inference example.
 ## How long does it take?
 1. Model loading & conversion (~30 seconds)
 2. Auto style selection (~1 minute, 10 styles compared)
-3. Optimization (~2-5 minutes, avg 494 steps on RTX 3090)
+3. Optimization (~5-6 minutes, avg 503 steps on RTX 3090)
 
 ## Performance
-Evaluated on 20 speakers × 5 utterances = 100 samples:
+Evaluated on 44 speakers × 5 utterances = 220 samples:
 
-| | SIM ↑ | WER ↓ |
-|---|---|---|
-| Preset styles (no cloning) | — | 1.72% |
-| **Proposed method** | **0.874** | **1.30%** |
+| | SIM (WavLM) ↑ | SIM (ECAPA) ↑ | SIM (ResNet) ↑ | WER ↓ |
+|---|---|---|---|---|
+| Nearest preset (no opt.) | 0.758 | 0.129 | 0.112 | 4.80% |
+| **Proposed method** | **0.867** | **0.452** | **0.446** | **2.70%** |
 
 ## File Structure
 ```
@@ -148,7 +148,7 @@ ONNX models are converted to PyTorch for gradient backpropagation:
 - Clip node empty input fix
 
 ### WavLM Layer 3 Feature Matching
-Based on probing analysis by [Chen et al. (2025)](https://arxiv.org/abs/2501.05310), WavLM Layer 3 best encodes speaker identity (100% accuracy). We compare time-averaged feature statistics (mean, std) between generated and target audio. Time-axis averaging removes content dependency.
+Based on probing analysis by [Chiu et al. (2025)](https://arxiv.org/abs/2501.05310), WavLM Layer 3 best encodes speaker identity. We compare time-averaged feature statistics (mean, std) between generated and target audio. Time-axis averaging reduces content dependency.
 
 ### Style Space
 - `style_ttl` [1, 50, 256] = 12,800 parameters (timbre, optimized)

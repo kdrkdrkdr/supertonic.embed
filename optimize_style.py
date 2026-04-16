@@ -4,7 +4,7 @@ Extract voice style JSON from a WAV file for SupertonicTTS.
 Core approach:
   - Convert ONNX TTS models to PyTorch (enables gradient backpropagation)
   - Optimize style vectors via WavLM Layer 3 feature matching
-  - Layer selection based on Chen et al. (2025) probing analysis
+  - Layer selection based on Chiu et al. (2025) probing analysis
   - Early stopping at same-speaker baseline threshold (0.24)
 
 Usage:
@@ -85,7 +85,7 @@ def load_pt_model(name, onnx_dir="onnx"):
 # ===== WavLM perceptual loss =====
 
 def load_wavlm():
-    """Load WavLM-Large. Layer 3 best encodes speaker identity (Chen et al. 2025)."""
+    """Load WavLM-Large. Layer 3 best encodes speaker identity (Chiu et al. 2025)."""
     from transformers import WavLMModel
     model = WavLMModel.from_pretrained('microsoft/wavlm-large').to(DEVICE).eval()
     for p in model.parameters():
