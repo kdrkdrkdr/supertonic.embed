@@ -156,5 +156,22 @@ Based on probing analysis by [Chiu et al. (2025)](https://arxiv.org/abs/2501.053
 
 Male and female voices occupy separate regions in style space. Starting from the closest preset style is critical.
 
+## Citation
+
+If you use this work, please cite:
+
+```bibtex
+@misc{kim2026supertonicembed,
+  author       = {Gyeongmin Kim},
+  title        = {Extracting Voice Styles from Frozen TTS Models via Gradient-Based Inverse Optimization},
+  year         = {2026},
+  publisher    = {Zenodo},
+  doi          = {10.5281/zenodo.19646514},
+  url          = {https://doi.org/10.5281/zenodo.19646514}
+}
+```
+
+Preprint available on Zenodo: https://doi.org/10.5281/zenodo.19646514
+
 ## Looking for help?
 If you have any questions, please feel free to open an issue.
