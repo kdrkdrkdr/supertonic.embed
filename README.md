@@ -7,6 +7,17 @@ Put in a 3~10 second voice sample, and get a voice style JSON that makes Superto
 
 **Requirements:** NVIDIA GPU with 4GB+ VRAM, CUDA support.
 
+## Responsible Use
+
+**This is research code released for academic purposes only.** Voice cloning technology can be misused for serious harm. By using this repository, you agree to the following.
+
+- **Obtain explicit consent** from any speaker whose voice you intend to clone. Cloning a real person's voice without permission may be illegal in your jurisdiction.
+- **Do not use this tool** for non-consensual voice impersonation, voice phishing (vishing), fraud, harassment, defamation, generation of misleading political or commercial content, or circumvention of voice-based authentication.
+- **Do not target identifiable individuals** (including public figures) without their explicit permission.
+- **Disclose synthetic audio** as AI-generated when distributing it, ideally with a watermark or provenance metadata (e.g., C2PA).
+
+The author disclaims all liability for misuse. Evaluation in the accompanying paper uses Common Voice (CC0 license) and does not target identifiable individuals. If you observe misuse of this code, please open an issue.
+
 ### How it works:
 ```
               ┌───────────────────────────────────────────┐
