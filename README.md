@@ -49,7 +49,24 @@ Same-speaker baseline loss is **0.15~0.24**. Optimization stops automatically wh
 
 ## Quick Start
 
-### 1. Install dependencies
+### 1. Install torch for your harware
+
+CUDA
+```bash
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+```
+
+XPU
+```bash
+pip install torch torchaudio intel-extension-for-pytorch --extra-index-url https://pytorch-extension.intel.com/release-whl/stable/xpu/us/
+```
+
+CPU
+```bash
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+```
+
+### 2. Install dependencies
 ```bash
 pip install -r requirements.txt
 ```

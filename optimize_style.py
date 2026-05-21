@@ -42,8 +42,12 @@ class _NoVerifyClient(_orig_client):
         super().__init__(*args, **kwargs)
 httpx.Client = _NoVerifyClient
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+if torch.cuda.is_available():
+    DEVICE = torch.device("cuda")
+elif hasattr(torch, "xpu") and torch.xpu.is_available():
+    DEVICE = torch.device("xpu")
+else:
+    DEVICE = torch.device("cpu")
 
 # ===== ONNX to PyTorch conversion =====
 
